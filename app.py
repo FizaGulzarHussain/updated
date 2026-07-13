@@ -428,12 +428,16 @@ button[data-testid="baseButton-primary"]:focus-visible {
    "Only show good leads". Force every paint property on the icon and its
    inner SVG/path nodes so it's always the visible brand blue. */
 [data-testid="stTooltipIcon"],
-[data-testid="stTooltipIcon"] svg,
-[data-testid="stTooltipIcon"] svg path,
-[data-testid="stTooltipIcon"] svg circle {
+[data-testid="stTooltipIcon"] svg {
     color: #2563EB !important;
-    fill: #2563EB !important;
+    opacity: 1 !important;
+}
+[data-testid="stTooltipIcon"] svg path,
+[data-testid="stTooltipIcon"] svg circle,
+[data-testid="stTooltipIcon"] svg line {
+    fill: none !important;
     stroke: #2563EB !important;
+    stroke-width: 2px !important;
     opacity: 1 !important;
 }
 div[role="tooltip"],
@@ -465,7 +469,7 @@ div[role="tooltip"] *, [data-testid="stTooltipContent"] *,
 [data-testid="stHorizontalBlock"] { align-items: stretch !important; gap: 0.75rem !important; }
 
 /* ── Radio Pills ──────────────────────────────────────── */
-.stRadio > div { gap: 0.5rem !important; flex-direction: row !important; flex-wrap: wrap !important; }
+.stRadio > div { gap: 0.5rem !important; flex-direction: row !important; flex-wrap: nowrap !important; }
 /* Hide the browser's native radio circle (the red/empty dot). The selected
    state is conveyed by the whole pill's background instead. The circle is the
    div sitting immediately before the text container, so match it by that
@@ -473,8 +477,9 @@ div[role="tooltip"] *, [data-testid="stTooltipContent"] *,
 .stRadio label div:has(+ [data-testid="stMarkdownContainer"]) { display: none !important; }
 .stRadio > div > label {
     background: #FFFFFF !important; border: 1.5px solid #CBD5E1 !important;
-    border-radius: 9px !important; padding: 0.5rem 1.2rem !important;
+    border-radius: 9px !important; padding: 0.5rem 1rem !important;
     cursor: pointer !important;
+    white-space: nowrap !important;
     transition: all 0.17s !important;
     font-weight: 600 !important; font-size: 0.88rem !important; color: #475569 !important;
 }
@@ -2411,7 +2416,7 @@ if _view == "leads":
     # Wrapped in a column matching the first search-field column's width so the
     # pills line up with "Category" below instead of sitting flush against the
     # page edge while the fields start further right.
-    _mode_col, _ = st.columns([2.2, 5.6])
+    _mode_col, _ = st.columns([3.4, 4.4])
     with _mode_col:
         _mode = st.radio(
             _t("Mode", "Modus"),
