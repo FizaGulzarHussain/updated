@@ -2434,8 +2434,29 @@ if _view == "leads":
             industry = st.text_input(_t("Category :red[*]", "Kategorie :red[*]"),
                                      placeholder=_t("e.g. dentist", "z. B. Zahnarzt"), key="q_industry")
         with s2:
-            area = st.text_input(_t("Location :red[*]", "Standort :red[*]"),
-                                 placeholder=_t("e.g. Berlin, Germany", "z. B. Berlin"), key="q_area")
+            if _SEARCHBOX_AVAILABLE and _get_secret("LOCATIONIQ_KEY"):
+                _area_selection = st_searchbox(
+                    _location_searchbox_fn,
+                    key="area_query_searchbox",
+                    label=_t("Location :red[*]", "Standort :red[*]"),
+                    placeholder=_t("e.g. Berlin, Germany", "z. B. Berlin"),
+                    clear_on_submit=False,
+                    rerun_on_update=True,
+                    default="",
+                )
+                # A clicked suggestion comes back as the dict built in
+                # _location_searchbox_fn (label, value=dict); text the rep
+                # typed but never selected comes back as a bare string.
+                # Accept both so the field still works as free text.
+                if isinstance(_area_selection, dict):
+                    area = _area_selection.get("description", "")
+                else:
+                    area = _area_selection or ""
+            else:
+                # Fallback when the searchbox component or LocationIQ key
+                # isn't available, so the field never just disappears.
+                area = st.text_input(_t("Location :red[*]", "Standort :red[*]"),
+                                     placeholder=_t("e.g. Berlin, Germany", "z. B. Berlin"), key="q_area")
         with s3:
             # Optional field — no asterisk, and no "(optional)" text either.
             search_query = st.text_input(_t("Keywords", "Stichworte"),
@@ -2734,12 +2755,19 @@ elif _view == "history":
             u    = e.get("url", "")
             name = e.get("business_name", u)
             with st.container():
+                # Computed once, up front, since both hc1 (link + PageSpeed
+                # line) and hc2 (Unpreview vs. Run preview button) need to
+                # know whether a preview is already active for this URL.
+                _preview_for_url = _previews_by_url.get(u)
                 hc1, hc2, hc3 = st.columns([2.2, 1.8, 1])
                 with hc1:
                     st.markdown(f"**{name}**")
                     st.caption(_domain(u))
-                with hc2:
-                    _preview_for_url = _previews_by_url.get(u)
+                    # Preview link + PageSpeed one-liner now live directly
+                    # under the business name/URL instead of stacking on
+                    # top of the Unpreview button in hc2 — that stacking
+                    # used to leave an empty gap under this column since
+                    # hc1 only ever had two short lines here.
                     if _preview_for_url and _preview_for_url.get("preview_url"):
                         _one_liner = _preview_one_liner(_preview_for_url)
                         st.markdown(
@@ -2750,6 +2778,12 @@ elif _view == "history":
                             f'{_html_mod.escape(_one_liner)}</div>',
                             unsafe_allow_html=True,
                         )
+                with hc2:
+                    # This column now holds only the action button — Unpreview
+                    # when a preview is live, Run preview otherwise — so it
+                    # stays a single row tall and lines up with the Report
+                    # button in hc3 instead of trailing below the link text.
+                    if _preview_for_url and _preview_for_url.get("preview_url"):
                         if st.button(f"🗑 {_t('Unpreview', 'Entfernen')}",
                                      key=f"hist_unpreview_{i}", use_container_width=True):
                             _remove_preview(u)
