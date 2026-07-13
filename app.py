@@ -2438,7 +2438,13 @@ if _view == "leads":
                 _area_selection = st_searchbox(
                     _location_searchbox_fn,
                     key="area_query_searchbox",
-                    label=_t("Location :red[*]", "Standort :red[*]"),
+                    # st_searchbox is a custom component and renders the
+                    # label as literal text — it doesn't interpret
+                    # Streamlit's ":red[...]" markdown color syntax the way
+                    # native widgets do. Using that syntax here would show
+                    # up on-screen verbatim (e.g. "Location :red[*]"), so we
+                    # fall back to a plain asterisk for this field only.
+                    label=_t("Location *", "Standort *"),
                     placeholder=_t("e.g. Berlin, Germany", "z. B. Berlin"),
                     clear_on_submit=False,
                     rerun_on_update=True,
