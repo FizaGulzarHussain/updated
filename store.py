@@ -64,7 +64,8 @@ def _conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create the leads table if it doesn't exist. Safe to call on every run."""
+    """Create the leads + sent_emails tables if they don't exist. Safe to call
+    on every run."""
     with _LOCK, _conn() as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS leads (
@@ -85,6 +86,22 @@ def init_db() -> None:
                 cdn_json       TEXT,
                 tech_json      TEXT,
                 contact_json   TEXT
+            )
+        """)
+        # One row per sent email — the team-visible "Sent" record. Kept separate
+        # from `leads` (which only tracks the *latest* contacted_at/by per lead)
+        # so every send is logged, not just the most recent one per site.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sent_emails (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                url            TEXT,
+                business_name  TEXT,
+                sender_email   TEXT,
+                to_email       TEXT,
+                subject        TEXT,
+                body           TEXT,
+                sent_by        TEXT,
+                sent_at        TEXT
             )
         """)
 
@@ -187,7 +204,25 @@ def counts() -> dict:
             "by_status": by_status, "by_owner": by_owner}
 
 
+def log_sent_email(url: str, *, business_name: str, sender_email: str, to_email: str,
+                    subject: str, body: str, sent_by: str) -> None:
+    """Record one sent email — this is what powers the Sent records list."""
+    with _LOCK, _conn() as c:
+        c.execute("""INSERT INTO sent_emails
+            (url, business_name, sender_email, to_email, subject, body, sent_by, sent_at)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (url, business_name, sender_email, to_email, subject, body, sent_by, _now()))
+
+
+def all_sent_emails() -> list[dict]:
+    """Every sent email, most recent first — team-wide."""
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM sent_emails ORDER BY id DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
 def clear_all() -> None:
     """Wipe the shared store. Destructive — the UI gates this behind a confirm."""
     with _LOCK, _conn() as c:
         c.execute("DELETE FROM leads")
+        c.execute("DELETE FROM sent_emails")

@@ -110,7 +110,14 @@ def _location_searchbox_fn(searchterm: str):
     suggestions, _err = locationiq_autocomplete(searchterm, api_key)
     return [(s["description"], s) for s in suggestions]
 
-def send_email_smtp(to_addr: str, subject: str, body: str) -> tuple[bool, str]:
+def send_email_smtp(to_addr: str, subject: str, body: str, from_addr: str | None = None) -> tuple[bool, str]:
+    """Send via the SMTP relay configured in secrets.toml, using `from_addr` as
+    the visible From/Reply-To so replies land with the rep, not a shared inbox.
+    The relay account (SMTP_USER/PASSWORD) still does the actual authentication.
+    A record of the send is logged in-app on the Sent tab (see the Email view)
+    since the entered address's own external mailbox has no way to know about
+    a send it wasn't logged into for.
+    """
     try:
         smtp_host   = _get_secret("SMTP_HOST", "smtp.gmail.com")
         smtp_port   = int(_get_secret("SMTP_PORT", 587))
@@ -119,16 +126,19 @@ def send_email_smtp(to_addr: str, subject: str, body: str) -> tuple[bool, str]:
         if not smtp_user or not smtp_pass:
             return False, "SMTP credentials not configured. Add SMTP_USER and SMTP_PASSWORD to your secrets.toml."
 
+        sender = (from_addr or "").strip() or smtp_user
+
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = smtp_user
-        msg["To"]      = to_addr
+        msg["Subject"]   = subject
+        msg["From"]      = sender
+        msg["Reply-To"]  = sender
+        msg["To"]        = to_addr
         msg.attach(MIMEText(body, "plain"))
 
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
             server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to_addr, msg.as_string())
+            server.sendmail(sender, to_addr, msg.as_string())
         return True, "Sent successfully"
     except KeyError:
         return False, "SMTP credentials not configured."
@@ -257,14 +267,64 @@ textarea::placeholder {
    inside its own iframe, so the .stTextInput rules above never reach
    its internal <input>. Border it from the outside instead, matching
    the look of the other fields, and let the focus glow apply whenever
-   the iframe (or anything inside it) has focus. */
+   the iframe (or anything inside it) has focus.
+
+   Two separate problems were showing up here:
+
+   1. The wrapper had `overflow: hidden` and no fixed height, so it
+      auto-sized to whatever the iframe reported. The iframe grows
+      internally to fit the OPEN suggestion list, so opening the
+      dropdown stretched this whole bordered box and dragged the row
+      out of alignment with Category / Keywords beside it.
+
+   2. Fixing #1 by pinning a height alone made things worse: unlike
+      the other fields (external label OUTSIDE the bordered box,
+      handled by `.stTextInput label` above), st_searchbox renders its
+      label INSIDE the iframe, above the input. So the iframe's closed
+      (no dropdown open) height is "label row + input row", not just
+      "input row" — guessing a single fixed height for that combo
+      either clipped the label or left the input hanging outside the
+      border, which is the detached-looking box from the second
+      screenshot.
+
+   The fix addresses both at once: the label is moved OUT of the
+   component (label="" in the Python call, styled label rendered via
+   st.markdown right above it using .fs-searchbox-label, matching
+   .stTextInput label exactly) so the iframe's own content is just the
+   input row — now directly comparable to the plain <input> height
+   used by every other field. The wrapper is pinned to that same
+   height and the iframe is positioned absolutely inside it, so the
+   iframe can still grow internally for the open dropdown without
+   changing the wrapper's box at all — it just overlays below,
+   exactly like every other dropdown, instead of resizing anything. */
+.fs-searchbox-label {
+    font-weight: 600 !important; font-size: 0.82rem !important;
+    color: #475569 !important; letter-spacing: 0.02em !important;
+    text-transform: uppercase !important; margin-bottom: 5px !important;
+    line-height: 1.2 !important;
+}
 div[class*="st-key-area_query_searchbox"] {
+    position: relative !important;
+    /* box-sizing matters here: the page defaults everything to
+       border-box, so `height: 44px` on its own means the 1.5px*2
+       border eats INTO that 44px, leaving the iframe only ~41px of
+       content area to sit in. The iframe's control was told to be a
+       44px-tall control via style_overrides, so it no longer fit —
+       it rendered at its full 44px and poked ~3px past the wrapper's
+       own bottom edge, which is exactly the "second, detached-looking
+       box under the label" in the screenshot. Forcing content-box
+       here makes `height` mean the CONTENT area only, so the iframe's
+       44px control fits inside it with the border added cleanly on
+       top (total rendered box: 44 + 3 = 47px, still reads as the same
+       height as the other fields at a glance). */
+    box-sizing: content-box !important;
+    height: 44px !important;
+    overflow: visible !important;
     border: 1.5px solid #CBD5E1 !important;
     border-radius: 10px !important;
     background: #FFFFFF !important;
     box-shadow: 0 1px 3px rgba(15,23,42,0.06) !important;
     transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
-    overflow: hidden !important;
 }
 div[class*="st-key-area_query_searchbox"]:hover {
     border-color: #93C5FD !important;
@@ -274,8 +334,15 @@ div[class*="st-key-area_query_searchbox"]:focus-within {
     box-shadow: 0 0 0 3px rgba(37,99,235,0.12) !important;
 }
 div[class*="st-key-area_query_searchbox"] iframe {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
     border: none !important;
-    display: block !important;
+    z-index: 30 !important;
+}
+div[class*="st-key-area_query_searchbox"]:focus-within iframe {
+    z-index: 40 !important;
 }
 /* textarea */
 .stTextArea textarea {
@@ -1267,7 +1334,7 @@ except ImportError:
         else:          issues.append(f"Slow TTFB: {ttfb}ms")
         return {
             "url": url, "overall_score": min(score + 25, 100),
-            "breakdown": {"seo": {"score": score, "issues": issues, "strengths": strengths, "details": {}}},
+            "breakdown": {"SEO": {"score": score, "issues": issues, "strengths": strengths, "details": {}}},
             "lighthouse_details": {}, "fastsite_projection": {},
         }
 
@@ -1921,6 +1988,30 @@ st.markdown("""
   letter-spacing:0.08em; color:rgba(255,255,255,0.42);
   margin:0.4rem 0 0.2rem 0.2rem;
 }
+
+/* Email view — per-lead outreach card */
+.fs-email-row {
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  padding:2px 2px;
+}
+.fs-email-row .fs-email-name { font-weight:700; color:#0F172A; }
+.fs-email-row .fs-email-domain { color:#64748B; font-size:0.85rem; }
+.fs-email-pill {
+  font-size:0.72rem; font-weight:700; padding:2px 10px; border-radius:99px;
+  color:#fff; white-space:nowrap;
+}
+.fs-email-addr {
+  font-size:0.82rem; font-weight:600; color:#1E3A8A; background:#EFF6FF;
+  padding:2px 9px; border-radius:6px; white-space:nowrap;
+}
+.fs-email-missing {
+  font-size:0.78rem; font-weight:600; color:#92400E; background:#FEF3C7;
+  padding:2px 9px; border-radius:6px; white-space:nowrap;
+}
+.fs-email-sent {
+  font-size:0.78rem; font-weight:700; color:#065F46; background:#D1FAE5;
+  padding:2px 9px; border-radius:6px; white-space:nowrap;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1930,6 +2021,7 @@ st.markdown("""
 # ═════════════════════════════════════════════════════════════════════════════
 _VIEWS = [
     ("leads",    "🔍", _t("Leads",    "Leads")),
+    ("email",    "📧", _t("Email",    "E-Mail")),
     ("history",  "🕘", _t("History",  "Verlauf")),
     ("exports",  "📤", _t("Exports",  "Export")),
     ("settings", "⚙️", _t("Settings", "Einstellungen")),
@@ -2214,13 +2306,27 @@ def _render_detail(url: str) -> None:
                     _store.claim_lead(url, _rep); st.rerun()
         with oc2:
             st.caption(_t("Pipeline status", "Pipeline-Status"))
+            # Streamlit ignores `index=` once a keyed widget already exists in
+            # session_state, so a status change made elsewhere (e.g. the
+            # "Contacted" button flipping new -> contacted) would otherwise be
+            # invisible here and then get clobbered back to the stale widget
+            # value below. Re-seed the widget's session_state any time the
+            # store's status differs from what we last synced, so the dropdown
+            # (and the comparison after it) reflect the true current status.
+            _status_key = f"status_{_uk}"
+            _seen_key = f"_status_seen_{_uk}"
+            if st.session_state.get(_seen_key) != _status:
+                st.session_state[_status_key] = _status
+                st.session_state[_seen_key] = _status
             _idx = _store.STATUSES.index(_status) if _status in _store.STATUSES else 0
             _new_status = st.selectbox(
                 "status", _store.STATUSES, index=_idx,
                 format_func=lambda s: _STATUS_LABELS.get(s, s),
-                key=f"status_{_uk}", label_visibility="collapsed")
+                key=_status_key, label_visibility="collapsed")
             if _new_status != _status:
-                _store.set_status(url, _new_status); st.rerun()
+                _store.set_status(url, _new_status)
+                st.session_state[_seen_key] = _new_status
+                st.rerun()
         with oc3:
             st.caption(_t("Contacted", "Kontaktiert"))
             if _c_at:
@@ -2250,85 +2356,10 @@ def _render_detail(url: str) -> None:
                 )
                 st.dataframe(sub, hide_index=True, use_container_width=True)
 
-    # ── Contact + outreach ───────────────────────────────────────────────────
-    c = st.session_state["contacts"].get(url)
-    cc1, cc2 = st.columns([1, 1])
-    with cc1:
-        if st.button(_t("📇 Extract contact info", "📇 Kontakt extrahieren"),
-                     key="detail_contact", use_container_width=True):
-            with st.spinner(_t("Scanning site for email & phone…", "Suche nach E-Mail & Telefon…")):
-                _extracted = extract_contact_info(url)
-                st.session_state["contacts"][url] = _extracted
-                if STORE_AVAILABLE:
-                    try:
-                        _store.upsert_lead(url, contact=_extracted)
-                    except Exception:
-                        pass
-            st.rerun()
-    if c:
-        email = c.get("primary_email") or (c.get("emails") or [None])[0]
-        phone = (c.get("phones") or [None])[0]
-        st.markdown(
-            f"**📧 {email or _t('no email found','keine E-Mail')}**  \n"
-            f"📞 {phone or '—'}   ·   🔗 {c.get('contact_page') or '—'}"
-        )
-
-    # ── Cold email ───────────────────────────────────────────────────────────
-    with st.expander(_t("✉️ Cold email", "✉️ Kalt-E-Mail"), expanded=False):
-        cdn = st.session_state["cdn_map"].get(url, {})
-        proj = (a or {}).get("fastsite_projection", {}) or {}
-        cur = proj.get("current", {}) or {}
-        email_text = generate_cold_email(
-            business_name=name, url=url,
-            overall_score=sc["overall"], speed_score=sc["speed"],
-            performance_score=sc["perf"], opportunity_score=sc["opp"],
-            primary_email=(c or {}).get("primary_email"),
-            ttfb_ms=cur.get("ttfb_ms"), lcp_ms=cur.get("lcp_ms"),
-            has_cdn=cdn.get("has_cdn", False),
-        )
-        # split subject / body
-        subject_line = f"{_domain(url)} speed audit — {sc['overall']}/100"
-        body = email_text
-        if email_text.startswith("Subject:"):
-            first_nl = email_text.find("\n")
-            subject_line = email_text[len("Subject:"):first_nl].strip()
-            body = email_text[first_nl:].lstrip("\n")
-        rep = st.session_state.get("rep_name", "").strip()
-        body = body.replace("[Your name]", rep or "[Your name]")
-        edited = st.text_area(_t("Body", "Text"), value=body, height=240, key="detail_email_body")
-        # Auto-fill the recipient from freshly-extracted contact info. Two
-        # gotchas handled here: (1) Streamlit ignores `value=` once a keyed
-        # widget already exists, so we seed session_state directly instead;
-        # (2) the key is per-URL so switching leads doesn't carry an address
-        # over. We only seed when the field is still empty, so a rep's
-        # hand-typed address is never clobbered.
-        _recip_key = "detail_email_to_" + url.replace("https://", "").replace("http://", "").replace("/", "_").strip("_")
-        _auto_email = (c or {}).get("primary_email") or ((c or {}).get("emails") or [None])[0] or ""
-        if _auto_email and not st.session_state.get(_recip_key):
-            st.session_state[_recip_key] = _auto_email
-        recipient = st.text_input(_t("Send to", "Senden an"), key=_recip_key)
-        sccol1, sccol2 = st.columns([1, 1])
-        with sccol1:
-            if st.button(_t("📤 Send email", "📤 E-Mail senden"), key="detail_send",
-                         type="primary", use_container_width=True, disabled=not recipient):
-                ok, msg = send_email_smtp(recipient, subject_line, edited)
-                if ok:
-                    _rep = st.session_state.get("rep_name", "")
-                    st.session_state["contacted"][url] = {
-                        "at": time.strftime("%Y-%m-%d %H:%M"),
-                        "by": _rep,
-                    }
-                    if STORE_AVAILABLE:
-                        try:
-                            _store.set_contacted(url, by=_rep)   # team-visible, persists
-                        except Exception:
-                            pass
-                    st.success(_t("Sent!", "Gesendet!"))
-                else:
-                    st.error(msg)
-        with sccol2:
-            if url in st.session_state["contacted"]:
-                st.success(f"✅ {_t('Contacted','Kontaktiert')} {st.session_state['contacted'][url].get('at','')}")
+    st.caption(_t(
+        "📧 Contact info & cold email are now in the Email tab — open it from the left nav.",
+        "📧 Kontaktdaten & Kalt-E-Mail befinden sich jetzt im Tab E-Mail — links in der Navigation.",
+    ))
 
     # ── PDF + live preview ───────────────────────────────────────────────────
     pcol1, pcol2 = st.columns([1, 1])
@@ -2435,29 +2466,112 @@ if _view == "leads":
                                      placeholder=_t("e.g. dentist", "z. B. Zahnarzt"), key="q_industry")
         with s2:
             if _SEARCHBOX_AVAILABLE and _get_secret("LOCATIONIQ_KEY"):
-                _area_selection = st_searchbox(
-                    _location_searchbox_fn,
-                    key="area_query_searchbox",
-                    # st_searchbox is a custom component and renders the
-                    # label as literal text — it doesn't interpret
-                    # Streamlit's ":red[...]" markdown color syntax the way
-                    # native widgets do. Using that syntax here would show
-                    # up on-screen verbatim (e.g. "Location :red[*]"), so we
-                    # fall back to a plain asterisk for this field only.
-                    label=_t("Location *", "Standort *"),
-                    placeholder=_t("e.g. Berlin, Germany", "z. B. Berlin"),
-                    clear_on_submit=False,
-                    rerun_on_update=True,
-                    default="",
-                )
-                # A clicked suggestion comes back as the dict built in
-                # _location_searchbox_fn (label, value=dict); text the rep
-                # typed but never selected comes back as a bare string.
-                # Accept both so the field still works as free text.
-                if isinstance(_area_selection, dict):
-                    area = _area_selection.get("description", "")
+                def _location_field_body():
+                    # Rendered as a normal page-level label ABOVE the
+                    # component (styled to match .stTextInput label) instead
+                    # of passing label=... into st_searchbox — see the CSS
+                    # comment on .fs-searchbox-label / st-key-area_query_searchbox
+                    # for why baking the label into the iframe broke alignment.
+                    st.markdown(
+                        f'<div class="fs-searchbox-label">{_t("Location", "Standort")} '
+                        f'<span style="color:#DC2626">*</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    _area_selection = st_searchbox(
+                        _location_searchbox_fn,
+                        key="area_query_searchbox",
+                        label="",
+                        placeholder=_t("e.g. Berlin, Germany", "z. B. Berlin"),
+                        clear_on_submit=False,
+                        rerun_on_update=True,
+                        # Every debounced keystroke re-invokes the search
+                        # function via a Streamlit rerun, so a short debounce
+                        # cuts down how many of those round-trips fire while
+                        # someone's still mid-word (was previously unset,
+                        # i.e. firing on every keystroke). 300ms was still
+                        # reading as sluggish next to the LocationIQ call
+                        # itself, which is cached and usually <150ms —
+                        # 150ms shaves the perceived lag without firing on
+                        # literally every keystroke of a fast typer.
+                        debounce=150,
+                        default="",
+                        # The input + dropdown live inside the component's own
+                        # iframe, so the page-level CSS above (which only styles
+                        # the OUTER wrapper) can never reach the actual <input>
+                        # or the suggestion list — they were falling back to the
+                        # component's unstyled react-select defaults, clashing
+                        # with the rest of the UI. style_overrides is the one
+                        # hook streamlit_searchbox provides that's applied
+                        # directly inside the React component, so it's the only
+                        # way to actually theme those inner pieces.
+                        style_overrides={
+                            "clear": {"width": 16, "height": 16, "icon": "cross", "stroke": "#94A3B8"},
+                            "dropdown": {"width": 20, "height": 20, "fill": "#94A3B8"},
+                            "searchbox": {
+                                # react-select's outermost wrapper (separate
+                                # from "control") can carry its own default
+                                # margin/padding. Any of that adds to the
+                                # iframe's reported closed-state height on
+                                # top of the 44px control below, which is
+                                # exactly the kind of few-extra-pixels gap
+                                # that made the field read as taller/
+                                # detached from Category and Keywords next
+                                # to it. Zeroing it out means the 44px
+                                # control is the only thing contributing to
+                                # that height, matching what the wrapper CSS
+                                # now assumes.
+                                "container": {"margin": "0", "padding": "0"},
+                                "control": {
+                                    "border": "none",
+                                    "boxShadow": "none",
+                                    "backgroundColor": "transparent",
+                                    "minHeight": "44px",
+                                },
+                                "input": {"color": "#0F172A"},
+                                "singleValue": {"color": "#0F172A"},
+                                "placeholder": {"color": "#94A3B8"},
+                                "menuList": {
+                                    "backgroundColor": "#FFFFFF",
+                                    "border": "1px solid #E2E8F4",
+                                    "borderRadius": "10px",
+                                    "boxShadow": "0 8px 24px rgba(15,23,42,0.12)",
+                                    "marginTop": "4px",
+                                    "padding": "4px",
+                                    "overflow": "hidden",
+                                },
+                                "option": {
+                                    "color": "#0F172A",
+                                    "backgroundColor": "#FFFFFF",
+                                    "borderRadius": "6px",
+                                    "padding": "10px 12px",
+                                    "fontSize": "0.9rem",
+                                },
+                            },
+                        },
+                    )
+                    # A clicked suggestion comes back as the dict built in
+                    # _location_searchbox_fn (label, value=dict); text the rep
+                    # typed but never selected comes back as a bare string.
+                    # Accept both so the field still works as free text.
+                    if isinstance(_area_selection, dict):
+                        st.session_state["_area_resolved"] = _area_selection.get("description", "")
+                    else:
+                        st.session_state["_area_resolved"] = _area_selection or ""
+
+                # Without a fragment, EVERY debounced keystroke here reruns
+                # this entire ~3000-line script before the new suggestions
+                # can even be drawn — that round trip, not the LocationIQ
+                # call itself, is most of the "suggestions are slow" feel.
+                # st.fragment (Streamlit >=1.33) scopes that rerun to just
+                # this function, so typing only re-executes the few lines
+                # above instead of the whole page. Falls back to a plain
+                # call on older Streamlit where st.fragment doesn't exist.
+                _fragment_deco = getattr(st, "fragment", None)
+                if _fragment_deco is not None:
+                    _fragment_deco(_location_field_body)()
                 else:
-                    area = _area_selection or ""
+                    _location_field_body()
+                area = st.session_state.get("_area_resolved", "")
             else:
                 # Fallback when the searchbox component or LocationIQ key
                 # isn't available, so the field never just disappears.
@@ -2687,6 +2801,321 @@ if _view == "leads":
 
         if st.session_state.get("detail_url") in row_urls:
             _render_detail(st.session_state["detail_url"])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# VIEW: EMAIL  — every audited site, its extracted contact email, and a
+# ready-to-send cold email in one place.
+# ═════════════════════════════════════════════════════════════════════════════
+elif _view == "email":
+    st.markdown(f"### 📧 {_t('Email Outreach', 'E-Mail-Ansprache')}")
+    st.caption(_t(
+        "Every audited website with its extracted contact email and a ready-to-send cold email. "
+        "Pick a lead, review or edit the email, and send it — or extract contact info first.",
+        "Jede geprüfte Website mit extrahierter Kontakt-E-Mail und einer versandfertigen Kalt-E-Mail. "
+        "Lead auswählen, E-Mail prüfen oder bearbeiten und senden — oder zuerst Kontaktdaten extrahieren.",
+    ))
+
+    # ── Sending identity — typed in by the rep, not a fixed SMTP account ──────
+    st.session_state.setdefault("sender_email", "")
+    with st.container():
+        st.markdown(
+            f'<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;'
+            f'padding:12px 16px 4px 16px;margin-bottom:0.6rem;">',
+            unsafe_allow_html=True,
+        )
+        sfcol1, sfcol2 = st.columns([2, 3])
+        with sfcol1:
+            st.session_state["sender_email"] = st.text_input(
+                _t("✉️ Send from (your email)", "✉️ Absender (Ihre E-Mail)"),
+                value=st.session_state["sender_email"],
+                placeholder=_t("you@yourcompany.com", "sie@ihrefirma.de"),
+                key="sender_email_input",
+            )
+        with sfcol2:
+            st.markdown("<div style='height:1.55rem;'></div>", unsafe_allow_html=True)
+            st.caption(_t(
+                "Used as the From/Reply-To on every email you send below. Every send is logged "
+                "on the Sent tab (below), so you always have a record of what went out and to whom.",
+                "Wird als Absender/Antwort-An für jede unten gesendete E-Mail verwendet. Jeder "
+                "Versand wird im Tab „Gesendet“ (unten) protokolliert, damit Sie immer einen "
+                "Nachweis haben, was an wen gesendet wurde.",
+            ))
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── Source of truth: shared store when available, else session data ───────
+    if STORE_AVAILABLE:
+        try:
+            _em_leads_raw = _store.all_leads()
+        except Exception:
+            _em_leads_raw = []
+        _em_audits    = {l["url"]: l["audit"]   for l in _em_leads_raw if l.get("audit") and not l["audit"].get("error")}
+        _em_contacts  = {l["url"]: l["contact"] for l in _em_leads_raw if l.get("contact")}
+        _em_cdn       = {l["url"]: l["cdn"]     for l in _em_leads_raw if l.get("cdn")}
+        _em_contacted = {l["url"]: {"at": l.get("contacted_at"), "by": l.get("contacted_by", "")}
+                         for l in _em_leads_raw if l.get("contacted_at")}
+        _em_names     = {l["url"]: (l.get("business_name") or l.get("domain") or l["url"]) for l in _em_leads_raw}
+    else:
+        _em_audits    = {u: a for u, a in st.session_state.get("audits", {}).items() if not a.get("error")}
+        _em_contacts  = st.session_state.get("contacts", {})
+        _em_cdn       = st.session_state.get("cdn_map", {})
+        _em_contacted = st.session_state.get("contacted", {})
+        _em_names     = {u: _biz_name(u) for u in _em_audits}
+
+    if not _em_audits:
+        st.info(_t(
+            "No audited sites yet. Run a speed check from the Leads view first — audited "
+            "sites will show up here automatically.",
+            "Noch keine geprüften Websites. Zuerst einen Speed-Check in der Leads-Ansicht "
+            "ausführen — geprüfte Seiten erscheinen dann automatisch hier.",
+        ))
+    else:
+        def _em_email(u: str) -> str | None:
+            _c = _em_contacts.get(u) or {}
+            return _c.get("primary_email") or (_c.get("emails") or [None])[0]
+
+        def _em_safe_key(u: str) -> str:
+            return u.replace("https://", "").replace("http://", "").replace("/", "_").strip("_")
+
+        # ── Summary metrics ────────────────────────────────────────────────────
+        _em_total       = len(_em_audits)
+        _em_with_email  = sum(1 for u in _em_audits if _em_email(u))
+        _em_sent        = sum(1 for u in _em_audits if u in _em_contacted)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(_t("Audited sites", "Geprüfte Seiten"), _em_total)
+        m2.metric(_t("Emails found", "E-Mails gefunden"), _em_with_email)
+        m3.metric(_t("Sent", "Gesendet"), _em_sent)
+        m4.metric(_t("Not yet sent", "Noch offen"), _em_total - _em_sent)
+
+        st.markdown("---")
+
+        # ── Filter + sort controls ─────────────────────────────────────────────
+        fcol1, fcol2 = st.columns([2.4, 1.2])
+        with fcol1:
+            _em_needle = st.text_input(
+                _t("Filter by business, domain or email", "Nach Unternehmen, Domain oder E-Mail filtern"),
+                key="email_filter", placeholder="…",
+            )
+        with fcol2:
+            _em_only_missing = st.checkbox(
+                _t("Only missing email", "Nur ohne E-Mail"), key="email_only_missing")
+
+        _em_urls = list(_em_audits.keys())
+        _em_urls.sort(key=lambda u: -opportunity_score(_em_audits[u], cdn_info=_em_cdn.get(u, {})))
+
+        _em_needle_l = (_em_needle or "").lower().strip()
+        _em_shown = []
+        for u in _em_urls:
+            name = _em_names.get(u, u)
+            addr = _em_email(u) or ""
+            if _em_needle_l and _em_needle_l not in name.lower() and _em_needle_l not in u.lower() and _em_needle_l not in addr.lower():
+                continue
+            if _em_only_missing and addr:
+                continue
+            _em_shown.append(u)
+
+        if not _em_shown:
+            st.info(_t("No leads match this filter.", "Keine Leads passen zu diesem Filter."))
+
+        # ── One expander per audited site ──────────────────────────────────────
+        for u in _em_shown:
+            a       = _em_audits[u]
+            name    = _em_names.get(u, u)
+            sc_opp  = opportunity_score(a, cdn_info=_em_cdn.get(u, {}))
+            bd      = a.get("breakdown", {}) or {}
+            sc_speed   = (bd.get("speed") or {}).get("score", 0)
+            sc_perf    = (bd.get("performance") or {}).get("score", 0)
+            sc_overall = a.get("overall_score", 0)
+            emoji, tl_label, tl_hex, _tl_meaning = _traffic_light(sc_opp)
+            c       = _em_contacts.get(u) or {}
+            addr    = _em_email(u)
+            _extracted_already = u in _em_contacts   # ran extraction, even if it found nothing
+            is_sent = u in _em_contacted
+            skey    = _em_safe_key(u)
+
+            if addr:
+                _email_status_txt = f"📧 {addr}"
+            elif _extracted_already:
+                _email_status_txt = _t("no email exists", "keine E-Mail vorhanden")
+            else:
+                _email_status_txt = _t("not extracted yet", "noch nicht extrahiert")
+
+            header = (
+                f"{emoji} **{name}**  ·  {_domain(u)}  ·  "
+                f"{_t('Opportunity','Chance')} {sc_opp}/100"
+                f"  ·  {_email_status_txt}"
+                + (f"  ·  ✅ {_t('sent','gesendet')}" if is_sent else "")
+            )
+
+            with st.expander(header, expanded=False):
+                if addr:
+                    _addr_pill = f'<span class="fs-email-addr">📧 {addr}</span>'
+                elif _extracted_already:
+                    _addr_pill = f'<span class="fs-email-missing">❌ {_t("No email exists on this site","Keine E-Mail auf dieser Website vorhanden")}</span>'
+                else:
+                    _addr_pill = f'<span class="fs-email-missing">{_t("Not extracted yet","Noch nicht extrahiert")}</span>'
+                # Row: identity + status pills
+                st.markdown(
+                    f'<div class="fs-email-row">'
+                    f'<span class="fs-email-pill" style="background:{tl_hex};">{emoji} {tl_label} · {sc_opp}</span>'
+                    f'<span class="fs-email-name">{name}</span>'
+                    f'<span class="fs-email-domain">{_domain(u)}</span>'
+                    + _addr_pill
+                    + (f'<span class="fs-email-sent">✅ {_t("Contacted","Kontaktiert")} {_em_contacted[u].get("at","")}</span>' if is_sent else "")
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    f"{_t('Speed','Speed')} {sc_speed}/100 · {_t('Performance','Performance')} {sc_perf}/100 · "
+                    f"{_t('Overall','Gesamt')} {sc_overall}/100 · {u}"
+                )
+
+                # ── Extract contact info if missing ────────────────────────────
+                ecol1, ecol2 = st.columns([1, 3])
+                with ecol1:
+                    if st.button(_t("📇 Extract contact info", "📇 Kontakt extrahieren"),
+                                 key=f"email_extract_{skey}", use_container_width=True):
+                        with st.spinner(_t("Scanning site for email & phone…", "Suche nach E-Mail & Telefon…")):
+                            _extracted = extract_contact_info(u)
+                            st.session_state["contacts"][u] = _extracted
+                            if STORE_AVAILABLE:
+                                try:
+                                    _store.upsert_lead(u, contact=_extracted)
+                                except Exception:
+                                    pass
+                        st.rerun()
+                with ecol2:
+                    if _extracted_already and not addr and not c.get("phones") and not c.get("contact_page"):
+                        st.caption(f"❌ {_t('No email exists on this site — nothing found on the homepage or contact page.', 'Keine E-Mail auf dieser Website vorhanden — auf Startseite oder Kontaktseite nichts gefunden.')}")
+                    elif c.get("phones") or c.get("contact_page"):
+                        _phone = (c.get("phones") or [None])[0]
+                        st.caption(
+                            f"📞 {_phone or '—'}   ·   🔗 {c.get('contact_page') or '—'}"
+                        )
+
+                st.markdown(f"**✉️ {_t('Cold email', 'Kalt-E-Mail')}**")
+
+                # ── Generate the email body (same generator used elsewhere) ─────
+                _em_cdn_info = _em_cdn.get(u, {})
+                _em_proj = (a or {}).get("fastsite_projection", {}) or {}
+                _em_cur  = _em_proj.get("current", {}) or {}
+                _em_text = generate_cold_email(
+                    business_name=name, url=u,
+                    overall_score=sc_overall, speed_score=sc_speed,
+                    performance_score=sc_perf, opportunity_score=sc_opp,
+                    primary_email=addr,
+                    ttfb_ms=_em_cur.get("ttfb_ms"), lcp_ms=_em_cur.get("lcp_ms"),
+                    has_cdn=_em_cdn_info.get("has_cdn", False),
+                )
+                _em_subject = f"{_domain(u)} speed audit — {sc_overall}/100"
+                _em_body = _em_text
+                if _em_text.startswith("Subject:"):
+                    _first_nl = _em_text.find("\n")
+                    _em_subject = _em_text[len("Subject:"):_first_nl].strip()
+                    _em_body = _em_text[_first_nl:].lstrip("\n")
+                _rep = st.session_state.get("rep_name", "").strip()
+                _em_body = _em_body.replace("[Your name]", _rep or "[Your name]")
+
+                _subj_key = f"email_view_subject_{skey}"
+                _body_key = f"email_view_body_{skey}"
+                subject_edited = st.text_input(_t("Subject", "Betreff"), value=_em_subject, key=_subj_key)
+                body_edited = st.text_area(_t("Body", "Text"), value=_em_body, height=220, key=_body_key)
+
+                # ── Recipient — auto-filled from extracted contact, editable ────
+                _recip_key = f"email_view_to_{skey}"
+                if addr and not st.session_state.get(_recip_key):
+                    st.session_state[_recip_key] = addr
+                scol1, scol2 = st.columns([2, 1])
+                with scol1:
+                    recipient = st.text_input(
+                        _t("Send to", "Senden an"), key=_recip_key,
+                        placeholder=_t("name@company.com", "name@unternehmen.de"),
+                    )
+                with scol2:
+                    st.markdown("<div style='height:1.7rem;'></div>", unsafe_allow_html=True)
+                    _sender = st.session_state.get("sender_email", "").strip()
+                    if st.button(_t("📤 Send email", "📤 E-Mail senden"), key=f"email_view_send_{skey}",
+                                 type="primary", use_container_width=True,
+                                 disabled=not recipient or not _sender):
+                        ok, msg = send_email_smtp(recipient, subject_edited, body_edited, from_addr=_sender)
+                        if ok:
+                            st.session_state["contacted"][u] = {
+                                "at": time.strftime("%Y-%m-%d %H:%M"),
+                                "by": _rep,
+                            }
+                            _sent_record = {
+                                "url": u, "business_name": name, "sender_email": _sender,
+                                "to_email": recipient, "subject": subject_edited,
+                                "body": body_edited, "sent_by": _rep,
+                                "sent_at": time.strftime("%Y-%m-%d %H:%M"),
+                            }
+                            st.session_state.setdefault("sent_log", []).insert(0, _sent_record)
+                            if STORE_AVAILABLE:
+                                try:
+                                    _store.set_contacted(u, by=_rep)
+                                    _store.log_sent_email(
+                                        u, business_name=name, sender_email=_sender,
+                                        to_email=recipient, subject=subject_edited,
+                                        body=body_edited, sent_by=_rep,
+                                    )
+                                except Exception:
+                                    pass
+                            st.success(_t(
+                                "Sent! Find it under the Sent tab below.",
+                                "Gesendet! Zu finden im Tab „Gesendet“ weiter unten.",
+                            ))
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                if recipient and not _sender:
+                    st.caption(_t(
+                        "⚠️ Enter your sending email address above to enable sending.",
+                        "⚠️ Bitte oben Ihre Absender-E-Mail eingeben, um senden zu können.",
+                    ))
+
+    # ── Sent records ────────────────────────────────────────────────────────
+    # Every send is logged here (shared store when available, else this
+    # session only) — a permanent, searchable record of who/what/when, since
+    # an external mailbox's own Sent folder has no way to know about a send
+    # made through this app.
+    st.markdown("---")
+    st.markdown(f"### 📬 {_t('Sent', 'Gesendet')}")
+    if STORE_AVAILABLE:
+        try:
+            _sent_records = _store.all_sent_emails()
+        except Exception:
+            _sent_records = []
+    else:
+        _sent_records = st.session_state.get("sent_log", [])
+
+    if not _sent_records:
+        st.info(_t("No emails sent yet.", "Noch keine E-Mails gesendet."))
+    else:
+        st.caption(_t(f"{len(_sent_records)} email(s) sent.", f"{len(_sent_records)} E-Mail(s) gesendet."))
+        sent_needle = st.text_input(
+            _t("Filter sent emails", "Gesendete E-Mails filtern"),
+            key="sent_filter", placeholder="…")
+        sent_needle_l = (sent_needle or "").lower().strip()
+        for i, rec in enumerate(_sent_records):
+            if sent_needle_l and not any(
+                sent_needle_l in str(rec.get(f, "")).lower()
+                for f in ("business_name", "to_email", "sender_email", "subject", "url")
+            ):
+                continue
+            _sr_header = (
+                f"📤 {rec.get('sent_at','')}  ·  **{rec.get('business_name','')}**  ·  "
+                f"{rec.get('sender_email','')} → {rec.get('to_email','')}"
+            )
+            with st.expander(_sr_header, expanded=False):
+                st.markdown(f"**{_t('Subject','Betreff')}:** {rec.get('subject','')}")
+                st.caption(
+                    f"{_t('From','Von')}: {rec.get('sender_email','')} · "
+                    f"{_t('To','An')}: {rec.get('to_email','')} · "
+                    f"{_t('Site','Website')}: {rec.get('url','')} · "
+                    f"{_t('Sent by','Gesendet von')}: {rec.get('sent_by','')}"
+                )
+                st.text_area(_t("Body", "Text"), value=rec.get("body", ""),
+                             height=180, key=f"sent_body_{i}", disabled=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2951,6 +3380,16 @@ elif _view == "settings":
         d2.metric(_t("Contacted", "Kontaktiert"), _c["contacted"])
         _booked = _c["by_status"].get("booked", 0) + _c["by_status"].get("won", 0)
         d3.metric(_t("Demos / won", "Demos / gewonnen"), _booked)
+        st.caption(_t(
+            "\"Contacted\" = leads ever emailed (permanent). The pipeline table below shows each "
+            "lead's *current* stage, which a rep can move on manually — so a lead can show as "
+            "\"ever contacted\" here but sit in a different (or the \"New\") bucket below if its "
+            "stage was changed after the email was sent.",
+            "„Kontaktiert“ = jemals per E-Mail angeschriebene Leads (dauerhaft). Die Pipeline-Tabelle "
+            "unten zeigt die *aktuelle* Phase jedes Leads, die ein Vertriebler manuell ändern kann — "
+            "ein Lead kann hier also als „jemals kontaktiert“ erscheinen, aber unten in einem anderen "
+            "Bucket (z. B. „Neu“) stehen, wenn die Phase nach dem Versand geändert wurde.",
+        ))
 
         # Pipeline breakdown by status and by rep — the manager's at-a-glance.
         st.markdown(f"##### {_t('Pipeline by status','Pipeline nach Status')}")
